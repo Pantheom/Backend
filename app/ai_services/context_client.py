@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 CONTEXT_BASE_URL: str = os.getenv(
     "CONTEXT_URL",
-    "http://localhost:8002",  # override in .env with real AWS IP:port when deployed
+    "http://51.20.142.86:8002",
 )
 
 CONTEXT_TIMEOUT: float = float(os.getenv("CONTEXT_TIMEOUT_S", "10.0"))

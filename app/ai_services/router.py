@@ -8,6 +8,7 @@ from app.dependencies import get_current_user
 from app.ai_services.client import ping_cache, query_cache
 from app.ai_services.cascader_client import ping_cascader, route_prompt
 from app.ai_services.context_client import ping_context, get_context
+from app.ai_services.llm_client import call_llm, FALLBACK_TIER, TIER1_MODEL, TIER2_MODEL, TIER3_MODEL, _model_for_tier
 from app.ai_services.schemas import (
     AIQueryRequest,
     AIQueryResponse,
@@ -63,17 +64,20 @@ async def ai_query(
     Workflow:
       1. Send user prompt to the Semantic Cache (AWS EC2).
 
-      2a. Cache HIT  → return cached response immediately. No further calls made.
+      2a. Cache HIT  -> return cached response immediately. No further calls made.
 
-      2b. Cache MISS → fire Model Cascader + Context Classifier **in parallel**
+      2b. Cache MISS -> fire Model Cascader + Context Classifier **in parallel**
                        using asyncio.gather(). Total latency = max(cascader, context).
-                       Returns unified response with routing + context data.
 
-      2c. Cache UNAVAILABLE → fall through to the parallel pipeline anyway,
-                              so the user still gets routing + context info.
+      3.  With routing tier + context summary, call the correct LLM:
+            Tier 1 -> Groq   (llama-3.3-70b-versatile)
+            Tier 2 -> Google (gemini-2.5-flash,  GOOGLE_API_KEY_TIER2)
+            Tier 3 -> Google (gemini-3.5-flash,  GOOGLE_API_KEY_TIER3)
 
-    Partial failure: if one downstream service is down, its field is null.
-    The other result is still returned. Never a 500.
+      2c. Cache UNAVAILABLE -> fall through to the parallel pipeline + LLM anyway.
+
+    Partial failure: if one downstream service is down its field is null.
+    If the LLM call fails, response is null. Never a 500.
 
     Authentication: Bearer token required.
     """
@@ -136,27 +140,51 @@ async def ai_query(
     routing = RoutingResult(**routing_raw) if routing_raw else None
     context = ContextResult(**context_raw) if context_raw else None
 
+    # ------------------------------------------------------------------
+    # Step 3: Call the LLM on the routed tier
+    # ------------------------------------------------------------------
+    # Only the tier matters — model is resolved from env var inside llm_client.
+    llm_tier = routing.tier if routing and routing.tier else FALLBACK_TIER
+
+    # Inject context summary only when the classifier says it's needed.
+    context_summary = (
+        context.summary
+        if context and context.needs_context and context.summary
+        else None
+    )
+
+    llm_response: str | None = await call_llm(
+        tier=llm_tier,
+        prompt=data.prompt,
+        summary=context_summary,
+    )
+
+    total_latency_ms = round((time.monotonic() - t0) * 1000, 2)
+
     # Determine source and classification from cache result (if available)
     source = cache_result.get("source", "Cache_Miss") if cache_result else "Cache_Unavailable"
     classification = cache_result.get("classification") if cache_result else None
 
     # Build a human-readable status message
-    routing_status = f"tier={routing.tier} model={routing.model}" if routing else "unavailable"
+    llm_model = _model_for_tier(llm_tier)
+    routing_status = f"tier={llm_tier} model={llm_model}" if routing else f"fallback tier={llm_tier} model={llm_model}"
     context_status = (
         f"needs_context={context.needs_context}"
         if context else "unavailable"
     )
+    llm_status = "ok" if llm_response else "failed"
     message = (
         f"Cache miss. "
         f"Routing: {routing_status}. "
         f"Context: {context_status}. "
-        f"Pipeline latency: {pipeline_latency_ms}ms."
+        f"LLM: {llm_status}. "
+        f"Total latency: {total_latency_ms}ms."
     )
 
     return AIQueryResponse(
         cache_hit=False,
         source=source,
-        response=None,
+        response=llm_response,
         classification=classification,
         routing=routing,
         context=context,

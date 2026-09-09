@@ -10,6 +10,8 @@ cryptography==50.0.1
 deprecation==2.1.0
 email-validator>=2.0.0
 fastapi==0.141.1
+google-genai>=1.16.0
+groq>=0.29.0
 h11==0.16.0
 h2==4.4.1
 hpack==4.2.0
