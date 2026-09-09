@@ -9,6 +9,7 @@ from app.ai_services.client import ping_cache, query_cache
 from app.ai_services.cascader_client import ping_cascader, route_prompt
 from app.ai_services.context_client import ping_context, process_prompt, log_reply
 from app.ai_services.llm_client import call_llm, FALLBACK_TIER, TIER1_MODEL, TIER2_MODEL, TIER3_MODEL, _model_for_tier
+from app.ai_services.storage_tasks import save_chat_turn, push_to_cache
 from app.ai_services.schemas import (
     AIQueryRequest,
     AIQueryResponse,
@@ -102,6 +103,16 @@ async def ai_query(
     # Case: Cache HIT — return immediately, no further calls needed
     # ------------------------------------------------------------------
     if cache_result and cache_result["cache_hit"] and cache_result.get("response"):
+        # Fire-and-forget: save user+assistant turns to chat history.
+        # Always runs on HIT — never blocks the response.
+        asyncio.create_task(
+            save_chat_turn(
+                uid=uid,
+                session_id=session_id,
+                user_prompt=data.prompt,
+                assistant_response=cache_result["response"],
+            )
+        )
         return AIQueryResponse(
             cache_hit=True,
             source=cache_result["source"],
@@ -159,17 +170,40 @@ async def ai_query(
         prompt=llm_prompt,
     )
 
+    # Determine source and classification from cache result (if available).
+    # Must be resolved before the fire-and-forget tasks so push_to_cache
+    # can gate on classification without an UnboundLocalError.
+    source = cache_result.get("source", "Cache_Miss") if cache_result else "Cache_Unavailable"
+    classification = cache_result.get("classification") if cache_result else None
+
     # Log the assistant reply back to the context service (fire-and-forget).
     # This keeps conversation history complete for the next turn.
     # Uses create_task so it NEVER blocks the response — fires in background.
     if llm_response:
         asyncio.create_task(log_reply(session_id, llm_response))
 
-    total_latency_ms = round((time.monotonic() - t0) * 1000, 2)
+    # Fire-and-forget: save user+assistant turns to chat history (always on MISS).
+    asyncio.create_task(
+        save_chat_turn(
+            uid=uid,
+            session_id=session_id,
+            user_prompt=data.prompt,
+            assistant_response=llm_response,
+        )
+    )
 
-    # Determine source and classification from cache result (if available)
-    source = cache_result.get("source", "Cache_Miss") if cache_result else "Cache_Unavailable"
-    classification = cache_result.get("classification") if cache_result else None
+    # Fire-and-forget: push to semantic cache (MISS only, GENERAL queries only).
+    # classification comes from the cache miss metadata; None is treated as GENERAL.
+    if llm_response:
+        asyncio.create_task(
+            push_to_cache(
+                prompt=data.prompt,
+                response=llm_response,
+                classification=classification,
+            )
+        )
+
+    total_latency_ms = round((time.monotonic() - t0) * 1000, 2)
 
     # Build a human-readable status message
     llm_model = _model_for_tier(llm_tier)
