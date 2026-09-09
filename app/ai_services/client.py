@@ -149,3 +149,31 @@ async def ping_cache() -> bool:
         return resp.status_code == 200
     except Exception:
         return False
+
+
+async def store_cache(prompt: str, response: str) -> bool:
+    """
+    Persists a prompt+response pair into the semantic cache DB.
+
+    Called only on cache MISS and only for GENERAL (non-personal) queries.
+    Never raises — returns True on success, False on any failure.
+    Intended to be called with asyncio.create_task() so it never blocks.
+    """
+    payload = {"prompt": prompt, "response": response}
+    try:
+        client = await get_cache_client()
+        resp = await client.post("/v1/cache/store", json=payload)
+        if resp.status_code == 200:
+            log.debug("[CACHE] Stored prompt in semantic cache DB.")
+            return True
+        log.warning("[CACHE] store_cache got HTTP %s: %s", resp.status_code, resp.text[:200])
+        return False
+    except httpx.TimeoutException:
+        log.warning("[CACHE] store_cache timed out — skipping cache write.")
+        return False
+    except httpx.ConnectError:
+        log.warning("[CACHE] store_cache connection refused — cache may be down.")
+        return False
+    except Exception as exc:  # noqa: BLE001
+        log.error("[CACHE] store_cache unexpected error: %s", exc, exc_info=True)
+        return False
