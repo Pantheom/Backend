@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from app.dependencies import get_current_user
 from app.ai_services.client import ping_cache, query_cache
 from app.ai_services.cascader_client import ping_cascader, route_prompt
-from app.ai_services.context_client import ping_context, get_context
+from app.ai_services.context_client import ping_context, process_prompt, log_reply
 from app.ai_services.llm_client import call_llm, FALLBACK_TIER, TIER1_MODEL, TIER2_MODEL, TIER3_MODEL, _model_for_tier
 from app.ai_services.schemas import (
     AIQueryRequest,
@@ -118,13 +118,13 @@ async def ai_query(
 
     # ------------------------------------------------------------------
     # Case: Cache MISS or Cache UNAVAILABLE
-    # Fire Model Cascader + Context Classifier in parallel
+    # Fire Model Cascader + Context Service in parallel
     # ------------------------------------------------------------------
     t1 = time.monotonic()
 
     routing_raw, context_raw = await asyncio.gather(
         route_prompt(data.prompt),
-        get_context(session_id, data.prompt),
+        process_prompt(session_id, data.prompt),
         return_exceptions=True,   # ensures one failure doesn't cancel the other
     )
 
@@ -146,18 +146,24 @@ async def ai_query(
     # Only the tier matters — model is resolved from env var inside llm_client.
     llm_tier = routing.tier if routing and routing.tier else FALLBACK_TIER
 
-    # Inject context summary only when the classifier says it's needed.
-    context_summary = (
-        context.summary
-        if context and context.needs_context and context.summary
-        else None
+    # The context service returns combined_prompt (context already injected).
+    # Use it directly as the LLM prompt when available; fall back to raw prompt.
+    llm_prompt = (
+        context.combined_prompt
+        if context and context.combined_prompt
+        else data.prompt
     )
 
     llm_response: str | None = await call_llm(
         tier=llm_tier,
-        prompt=data.prompt,
-        summary=context_summary,
+        prompt=llm_prompt,
     )
+
+    # Log the assistant reply back to the context service (fire-and-forget).
+    # This keeps conversation history complete for the next turn.
+    # Uses create_task so it NEVER blocks the response — fires in background.
+    if llm_response:
+        asyncio.create_task(log_reply(session_id, llm_response))
 
     total_latency_ms = round((time.monotonic() - t0) * 1000, 2)
 

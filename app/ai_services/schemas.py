@@ -38,14 +38,22 @@ class RoutingResult(BaseModel):
 
 
 class ContextResult(BaseModel):
-    """Result from the Context Classifier + Summarizer."""
+    """Result from the Context Service production API (POST /v1/process)."""
     needs_context: Optional[bool] = Field(
         default=None,
-        description="True if the prompt requires conversation history context",
+        description="True if prior conversation history context was injected",
     )
-    summary: Optional[str] = Field(
+    context: Optional[str] = Field(
         default=None,
-        description="Rolling conversation summary to inject into the LLM prompt, if needed",
+        description="The raw context block (summary + recent turns) that was prepended, or null",
+    )
+    combined_prompt: Optional[str] = Field(
+        default=None,
+        description="LLM-ready prompt with context already injected. Send this directly to the LLM.",
+    )
+    turn_index: Optional[int] = Field(
+        default=None,
+        description="Sequential index of the user turn in session history",
     )
 
 
