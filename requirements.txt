@@ -8,6 +8,7 @@ cffi==2.1.1
 click==8.5.0
 cryptography==50.0.1
 deprecation==2.1.0
+email-validator>=2.0.0
 fastapi==0.141.1
 h11==0.16.0
 h2==4.4.1
