@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends
@@ -6,6 +7,8 @@ from app.auth import router as auth_router
 from app.chat import router as chat_router
 from app.ai_services.router import router as ai_router
 from app.ai_services.client import close_cache_client
+from app.ai_services.cascader_client import close_cascader_client
+from app.ai_services.context_client import close_context_client
 from app.dependencies import get_current_user
 
 
@@ -13,8 +16,12 @@ from app.dependencies import get_current_user
 async def lifespan(app: FastAPI):
     # Startup — nothing to initialise (clients are lazy-created on first use)
     yield
-    # Shutdown — cleanly close the httpx connection pool
-    await close_cache_client()
+    # Shutdown — cleanly close all httpx connection pools
+    await asyncio.gather(
+        close_cache_client(),
+        close_cascader_client(),
+        close_context_client(),
+    )
 
 app = FastAPI(
     title="Token Optimization Backend",
