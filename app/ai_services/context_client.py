@@ -1,16 +1,14 @@
 ﻿"""
 context_client.py
 -----------------
-Async HTTP client for the Context Service production API (apicreation branch).
+Async HTTP client for the Context Service API.
 
-API contract (POST /v1/process):
-  Request:  { "session_id": "<str>", "prompt": "<str>" }
+API contract (POST /api/session/{session_id}/get_context):
+    Request:  { "prompt": "<str>" }
   Header:   X-API-Key: <CONTEXT_API_KEY>
   Response: {
       "needs_context":   true | false,
-      "context":         "<context block>" | null,
-      "combined_prompt": "<ready-to-use prompt for LLM>",
-      "turn_index":      <int>
+            "context":         "<context block>" | null
   }
 
 The caller (router.py) should:
@@ -84,7 +82,7 @@ async def close_context_client() -> None:
 
 async def process_prompt(session_id: str, prompt: str) -> Optional[dict]:
     """
-    Call POST /v1/process on the Context Service.
+    Call POST /api/session/{session_id}/get_context on the Context Service.
 
     Returns None on any error — never raises.
 
@@ -93,7 +91,7 @@ async def process_prompt(session_id: str, prompt: str) -> Optional[dict]:
         "needs_context":   true | false,
         "context":         "<context block>" | null,
         "combined_prompt": "<LLM-ready prompt>",
-        "turn_index":      <int>
+        "turn_index":      null
       }
 
     The combined_prompt field is the one to send directly to the LLM —
@@ -102,8 +100,8 @@ async def process_prompt(session_id: str, prompt: str) -> Optional[dict]:
     try:
         client = await get_context_client()
         resp = await client.post(
-            "/v1/process",
-            json={"session_id": session_id, "prompt": prompt},
+            f"/api/session/{session_id}/get_context",
+            json={"prompt": prompt},
         )
 
         if resp.status_code == 503:
@@ -117,11 +115,27 @@ async def process_prompt(session_id: str, prompt: str) -> Optional[dict]:
         resp.raise_for_status()
         data = resp.json()
 
+        # The context service returns the context block separately. Keep the
+        # Backend-facing response contract by combining it with the prompt.
+        context = data.get("context")
+        combined_prompt = (
+            f"{context}\n\nUser prompt:\n{prompt}"
+            if context
+            else prompt
+        )
+
+        # The get_context endpoint reads the current prompt but does not save
+        # it, so persist the user turn for the next context request.
+        await client.post(
+            f"/api/session/{session_id}/turn",
+            json={"role": "user", "text": prompt},
+        )
+
         return {
             "needs_context":   data.get("needs_context", False),
-            "context":         data.get("context"),
-            "combined_prompt": data.get("combined_prompt", prompt),
-            "turn_index":      data.get("turn_index"),
+            "context":         context,
+            "combined_prompt": combined_prompt,
+            "turn_index":      None,
         }
 
     except httpx.TimeoutException:
@@ -143,7 +157,7 @@ async def process_prompt(session_id: str, prompt: str) -> Optional[dict]:
 
 async def log_reply(session_id: str, reply_text: str) -> None:
     """
-    Call POST /v1/sessions/{session_id}/reply to store the assistant response.
+    Call POST /api/session/{session_id}/turn to store the assistant response.
 
     Should be called after every LLM response so conversation history stays
     complete for the next process_prompt() call.
@@ -153,8 +167,8 @@ async def log_reply(session_id: str, reply_text: str) -> None:
     try:
         client = await get_context_client()
         resp = await client.post(
-            f"/v1/sessions/{session_id}/reply",
-            json={"text": reply_text},
+            f"/api/session/{session_id}/turn",
+            json={"role": "assistant", "text": reply_text},
         )
         resp.raise_for_status()
         log.debug("[CONTEXT] Reply logged for session=%s", session_id)
@@ -165,13 +179,13 @@ async def log_reply(session_id: str, reply_text: str) -> None:
 
 
 async def ping_context() -> bool:
-    """Returns True if the context service health endpoint responds and models are loaded."""
+    """Returns True if the context service is ready."""
     try:
         client = await get_context_client()
-        resp = await client.get("/v1/health", timeout=5.0)
+        resp = await client.get("/api/status", timeout=5.0)
         if resp.status_code == 200:
             data = resp.json()
-            return data.get("models_loaded", False)
+            return data.get("ready", False)
         return False
     except Exception:
         return False
