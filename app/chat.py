@@ -44,7 +44,37 @@ async def save_chat_message(
 
 
 # =========================================
-# GET CHAT HISTORY
+# GET ALL USER CHAT HISTORY
+# =========================================
+
+@router.get("/")
+async def get_user_chat_history(
+    session_id: str | None = None,
+    current_user=Depends(get_current_user),
+):
+
+    uid = current_user["uid"]
+
+    query = (
+        supabase
+        .table("chat_history")
+        .select("*")
+        .eq("uid", uid)
+    )
+
+    if session_id:
+        query = query.eq("session_id", session_id)
+
+    result = query.order("created_at").execute()
+
+    return {
+        "success": True,
+        "data": result.data,
+    }
+
+
+# =========================================
+# GET CHAT HISTORY BY SESSION
 # =========================================
 
 @router.get("/{session_id}")
