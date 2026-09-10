@@ -124,11 +124,11 @@ def _build_system_prompt(summary: Optional[str]) -> str:
 # TIER 1 -- Groq (llama-3.3-70b-versatile)
 # =========================================
 
-async def _call_groq(model: str, prompt: str, system_prompt: str) -> Optional[str]:
-    """Call Groq chat completions API (async)."""
+async def _call_groq(model: str, prompt: str, system_prompt: str) -> tuple[Optional[str], Optional[dict]]:
+    """Call Groq chat completions API (async). Returns (text, token_usage)."""
     if not GROQ_API_KEY:
         log.error("[LLM][Groq] GROQ_API_KEY is not set")
-        return None
+        return None, None
     try:
         client = _get_groq_client()
         response = await client.chat.completions.create(
@@ -139,22 +139,31 @@ async def _call_groq(model: str, prompt: str, system_prompt: str) -> Optional[st
             ],
             max_tokens=LLM_MAX_TOKENS,
         )
-        return response.choices[0].message.content
+        text = response.choices[0].message.content
+        usage = response.usage
+        token_usage = {
+            "prompt_tokens":     usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens":      usage.total_tokens,
+            "provider":          "Groq",
+            "model":             model,
+        } if usage else None
+        return text, token_usage
     except Exception as exc:
         log.error("[LLM][Groq] Error: %s", exc, exc_info=True)
-        return None
+        return None, None
 
 
 # =========================================
 # TIER 2 & 3 -- Google GenAI (Gemini)
 # =========================================
 
-async def _call_google(model: str, tier: int, prompt: str, system_prompt: str) -> Optional[str]:
-    """Call Google GenAI generate_content (async)."""
+async def _call_google(model: str, tier: int, prompt: str, system_prompt: str) -> tuple[Optional[str], Optional[dict]]:
+    """Call Google GenAI generate_content (async). Returns (text, token_usage)."""
     key = GOOGLE_API_KEY_TIER2 if tier == 2 else GOOGLE_API_KEY_TIER3
     if not key:
         log.error("[LLM][Google] GOOGLE_API_KEY_TIER%d is not set", tier)
-        return None
+        return None, None
     try:
         from google.genai import types
         client = _get_google_client(tier)
@@ -166,10 +175,19 @@ async def _call_google(model: str, tier: int, prompt: str, system_prompt: str) -
                 max_output_tokens=LLM_MAX_TOKENS,
             ),
         )
-        return response.text
+        text = response.text
+        meta = response.usage_metadata
+        token_usage = {
+            "prompt_tokens":     meta.prompt_token_count,
+            "completion_tokens": meta.candidates_token_count,
+            "total_tokens":      meta.total_token_count,
+            "provider":          "Google",
+            "model":             model,
+        } if meta else None
+        return text, token_usage
     except Exception as exc:
         log.error("[LLM][Google Tier %d] Error: %s", tier, exc, exc_info=True)
-        return None
+        return None, None
 
 
 # =========================================
@@ -180,7 +198,7 @@ async def call_llm(
     tier: int,
     prompt: str,
     summary: Optional[str] = None,
-) -> Optional[str]:
+) -> tuple[Optional[str], Optional[dict]]:
     """
     Route the prompt to the correct LLM provider based on tier.
 
@@ -194,7 +212,11 @@ async def call_llm(
                  If provided, it is injected into the system prompt.
 
     Returns:
-        The LLM text response, or None on any failure (never raises).
+        A tuple of (text, token_usage) where:
+          - text is the LLM response string, or None on failure.
+          - token_usage is a dict with prompt_tokens, completion_tokens,
+            total_tokens, provider, and model — or None on failure.
+        Never raises.
     """
     model = _model_for_tier(tier)
     system_prompt = _build_system_prompt(summary)

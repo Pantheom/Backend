@@ -58,13 +58,41 @@ class ContextResult(BaseModel):
 
 
 # =========================================
+# TOKEN USAGE
+# =========================================
+
+class TokenUsage(BaseModel):
+    """Token consumption from the LLM call. Null on cache hits (no LLM was invoked)."""
+    prompt_tokens: Optional[int] = Field(
+        default=None,
+        description="Number of tokens in the input prompt sent to the LLM",
+    )
+    completion_tokens: Optional[int] = Field(
+        default=None,
+        description="Number of tokens in the LLM's output response",
+    )
+    total_tokens: Optional[int] = Field(
+        default=None,
+        description="Total tokens consumed by this LLM call (prompt + completion)",
+    )
+    provider: Optional[str] = Field(
+        default=None,
+        description="LLM provider that processed the request — 'Groq' or 'Google'",
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description="Exact model identifier used for generation",
+    )
+
+
+# =========================================
 # RESPONSE — top-level
 # =========================================
 
 class AIQueryResponse(BaseModel):
     cache_hit: bool = Field(description="True if the cache returned a usable response")
     source: str = Field(
-        description="RAM_Exact_Hit | DB_Semantic_Hit | Cache_Miss | Cache_Unavailable"
+        description="DB_Semantic_Hit | Cache_Miss | Cache_Unavailable"
     )
     response: Optional[str] = Field(
         default=None,
@@ -86,6 +114,10 @@ class AIQueryResponse(BaseModel):
     latency_ms: Optional[float] = Field(
         default=None,
         description="Round-trip latency to the cache service in milliseconds",
+    )
+    token_usage: Optional[TokenUsage] = Field(
+        default=None,
+        description="Token consumption from the LLM. Null on cache hits.",
     )
     debug: Optional[CacheDebug] = None
     message: Optional[str] = Field(

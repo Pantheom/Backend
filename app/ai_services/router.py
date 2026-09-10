@@ -16,6 +16,7 @@ from app.ai_services.schemas import (
     CacheDebug,
     RoutingResult,
     ContextResult,
+    TokenUsage,
 )
 
 
@@ -165,10 +166,13 @@ async def ai_query(
         else data.prompt
     )
 
-    llm_response: str | None = await call_llm(
+    llm_response, token_usage_raw = await call_llm(
         tier=llm_tier,
         prompt=llm_prompt,
     )
+
+    # Build the structured TokenUsage object (None on failure or if API returned no usage data)
+    token_usage = TokenUsage(**token_usage_raw) if token_usage_raw else None
 
     # Determine source and classification from cache result (if available).
     # Must be resolved before the fire-and-forget tasks so push_to_cache
@@ -229,6 +233,7 @@ async def ai_query(
         routing=routing,
         context=context,
         latency_ms=total_latency_ms,
+        token_usage=token_usage,
         debug=CacheDebug(**cache_result.get("debug", {}))
         if cache_result and cache_result.get("debug")
         else None,
