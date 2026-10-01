@@ -1,4 +1,4 @@
-﻿"""
+"""
 context_client.py
 -----------------
 Async HTTP client for the Context Service API.
