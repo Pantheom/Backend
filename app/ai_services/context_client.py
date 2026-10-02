@@ -178,6 +178,29 @@ async def log_reply(session_id: str, reply_text: str) -> None:
         log.warning("[CONTEXT] Failed to log reply for session=%s: %s", session_id, exc)
 
 
+async def log_user_turn(session_id: str, prompt: str) -> None:
+    """
+    Call POST /api/session/{session_id}/turn to store the user's message.
+
+    Used on cache HIT path where process_prompt() is never called, so the
+    user turn must be written separately to keep chat_history complete for
+    the next context request and the summarizer's turn counter accurate.
+
+    Fire-and-forget — errors are logged but never propagated.
+    """
+    try:
+        client = await get_context_client()
+        resp = await client.post(
+            f"/api/session/{session_id}/turn",
+            json={"role": "user", "text": prompt},
+        )
+        resp.raise_for_status()
+        log.debug("[CONTEXT] User turn logged for session=%s", session_id)
+
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[CONTEXT] Failed to log user turn for session=%s: %s", session_id, exc)
+
+
 async def ping_context() -> bool:
     """Returns True if the context service is ready."""
     try:

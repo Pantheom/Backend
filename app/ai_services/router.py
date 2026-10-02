@@ -7,9 +7,9 @@ from fastapi import APIRouter, Depends
 from app.dependencies import get_current_user
 from app.ai_services.client import ping_cache, query_cache
 from app.ai_services.cascader_client import ping_cascader, route_prompt
-from app.ai_services.context_client import ping_context, process_prompt, log_reply
+from app.ai_services.context_client import ping_context, process_prompt, log_reply, log_user_turn
 from app.ai_services.llm_client import call_llm, FALLBACK_TIER, TIER1_MODEL, TIER2_MODEL, TIER3_MODEL, _model_for_tier
-from app.ai_services.storage_tasks import save_chat_turn, push_to_cache
+from app.ai_services.storage_tasks import push_to_cache
 from app.ai_services.schemas import (
     AIQueryRequest,
     AIQueryResponse,
@@ -104,16 +104,10 @@ async def ai_query(
     # Case: Cache HIT — return immediately, no further calls needed
     # ------------------------------------------------------------------
     if cache_result and cache_result["cache_hit"] and cache_result.get("response"):
-        # Fire-and-forget: save user+assistant turns to chat history.
-        # Always runs on HIT — never blocks the response.
-        asyncio.create_task(
-            save_chat_turn(
-                uid=uid,
-                session_id=session_id,
-                user_prompt=data.prompt,
-                assistant_response=cache_result["response"],
-            )
-        )
+        # Fire-and-forget: log both turns through the context service so the
+        # summarizer's turn counter stays accurate. Never blocks the response.
+        asyncio.create_task(log_user_turn(session_id, data.prompt))
+        asyncio.create_task(log_reply(session_id, cache_result["response"]))
         return AIQueryResponse(
             cache_hit=True,
             source=cache_result["source"],
@@ -181,20 +175,10 @@ async def ai_query(
     classification = cache_result.get("classification") if cache_result else None
 
     # Log the assistant reply back to the context service (fire-and-forget).
-    # This keeps conversation history complete for the next turn.
-    # Uses create_task so it NEVER blocks the response — fires in background.
+    # NOTE: The user turn is already written inside process_prompt() above,
+    # so only the assistant reply needs to be logged here.
     if llm_response:
         asyncio.create_task(log_reply(session_id, llm_response))
-
-    # Fire-and-forget: save user+assistant turns to chat history (always on MISS).
-    asyncio.create_task(
-        save_chat_turn(
-            uid=uid,
-            session_id=session_id,
-            user_prompt=data.prompt,
-            assistant_response=llm_response,
-        )
-    )
 
     # Fire-and-forget: push to semantic cache (MISS only, GENERAL queries only).
     # classification comes from the cache miss metadata; None is treated as GENERAL.
